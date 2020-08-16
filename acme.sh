@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 
-VER=2.8.6
+VER=2.8.7
 
 PROJECT_NAME="acme.sh"
 
@@ -23,22 +23,34 @@ _SUB_FOLDERS="$_SUB_FOLDER_DNSAPI $_SUB_FOLDER_DEPLOY $_SUB_FOLDER_NOTIFY"
 LETSENCRYPT_CA_V1="https://acme-v01.api.letsencrypt.org/directory"
 LETSENCRYPT_STAGING_CA_V1="https://acme-staging.api.letsencrypt.org/directory"
 
-LETSENCRYPT_CA_V2="https://acme-v02.api.letsencrypt.org/directory"
-LETSENCRYPT_STAGING_CA_V2="https://acme-staging-v02.api.letsencrypt.org/directory"
+CA_LETSENCRYPT_V2="https://acme-v02.api.letsencrypt.org/directory"
+CA_LETSENCRYPT_V2_TEST="https://acme-staging-v02.api.letsencrypt.org/directory"
 
-DEFAULT_CA=$LETSENCRYPT_CA_V2
-DEFAULT_STAGING_CA=$LETSENCRYPT_STAGING_CA_V2
+CA_BUYPASS="https://api.buypass.com/acme/directory"
+CA_BUYPASS_TEST="https://api.test4.buypass.no/acme/directory"
+
+CA_ZEROSSL="https://acme.zerossl.com/v2/DV90"
+_ZERO_EAB_ENDPOINT="http://api.zerossl.com/acme/eab-credentials-email"
+
+DEFAULT_CA=$CA_LETSENCRYPT_V2
+DEFAULT_STAGING_CA=$CA_LETSENCRYPT_V2_TEST
+
+CA_NAMES="
+Letsencrypt.org,letsencrypt
+Letsencrypt.org_test,letsencrypt_test,letsencrypttest
+BuyPass.com,buypass
+BuyPass.com_test,buypass_test,buypasstest
+ZeroSSL.com,zerossl
+"
+
+CA_SERVERS="$CA_LETSENCRYPT_V2,$CA_LETSENCRYPT_V2_TEST,$CA_BUYPASS,$CA_BUYPASS_TEST,$CA_ZEROSSL"
 
 DEFAULT_USER_AGENT="$PROJECT_NAME/$VER ($PROJECT)"
-DEFAULT_ACCOUNT_EMAIL=""
 
 DEFAULT_ACCOUNT_KEY_LENGTH=2048
 DEFAULT_DOMAIN_KEY_LENGTH=2048
 
 DEFAULT_OPENSSL_BIN="openssl"
-
-_OLD_CA_HOST="https://acme-v01.api.letsencrypt.org"
-_OLD_STAGE_CA_HOST="https://acme-staging.api.letsencrypt.org"
 
 VTYPE_HTTP="http-01"
 VTYPE_DNS="dns-01"
@@ -134,11 +146,19 @@ _DNS_ALIAS_WIKI="https://github.com/acmesh-official/acme.sh/wiki/DNS-alias-mode"
 
 _DNS_MANUAL_WIKI="https://github.com/acmesh-official/acme.sh/wiki/dns-manual-mode"
 
+_DNS_API_WIKI="https://github.com/acmesh-official/acme.sh/wiki/dnsapi"
+
 _NOTIFY_WIKI="https://github.com/acmesh-official/acme.sh/wiki/notify"
 
 _SUDO_WIKI="https://github.com/acmesh-official/acme.sh/wiki/sudo"
 
 _REVOKE_WIKI="https://github.com/acmesh-official/acme.sh/wiki/revokecert"
+
+_ZEROSSL_WIKI="https://github.com/acmesh-official/acme.sh/wiki/ZeroSSL.com-CA"
+
+_SERVER_WIKI="https://github.com/acmesh-official/acme.sh/wiki/Server"
+
+_PREFERRED_CHAIN_WIKI="https://github.com/acmesh-official/acme.sh/wiki/Preferred-Chain"
 
 _DNS_MANUAL_ERR="The dns manual mode can not renew automatically, you must issue it again manually. You'd better use the other modes instead."
 
@@ -188,28 +208,28 @@ _dlg_versions() {
   if _exists "${ACME_OPENSSL_BIN:-openssl}"; then
     ${ACME_OPENSSL_BIN:-openssl} version 2>&1
   else
-    echo "$ACME_OPENSSL_BIN doesn't exists."
+    echo "$ACME_OPENSSL_BIN doesn't exist."
   fi
 
   echo "apache:"
   if [ "$_APACHECTL" ] && _exists "$_APACHECTL"; then
     $_APACHECTL -V 2>&1
   else
-    echo "apache doesn't exists."
+    echo "apache doesn't exist."
   fi
 
   echo "nginx:"
   if _exists "nginx"; then
     nginx -V 2>&1
   else
-    echo "nginx doesn't exists."
+    echo "nginx doesn't exist."
   fi
 
   echo "socat:"
   if _exists "socat"; then
     socat -V 2>&1
   else
-    _debug "socat doesn't exists."
+    _debug "socat doesn't exist."
   fi
 }
 
@@ -1003,7 +1023,7 @@ _sign() {
 
   _sign_openssl="${ACME_OPENSSL_BIN:-openssl} dgst -sign $keyfile "
 
-  if grep "BEGIN RSA PRIVATE KEY" "$keyfile" >/dev/null 2>&1; then
+  if grep "BEGIN RSA PRIVATE KEY" "$keyfile" >/dev/null 2>&1 || grep "BEGIN PRIVATE KEY" "$keyfile" >/dev/null 2>&1; then
     $_sign_openssl -$alg | _base64
   elif grep "BEGIN EC PRIVATE KEY" "$keyfile" >/dev/null 2>&1; then
     if ! _signedECText="$($_sign_openssl -sha$__ECC_KEY_LEN | ${ACME_OPENSSL_BIN:-openssl} asn1parse -inform DER)"; then
@@ -1014,8 +1034,32 @@ _sign() {
     fi
     _debug3 "_signedECText" "$_signedECText"
     _ec_r="$(echo "$_signedECText" | _head_n 2 | _tail_n 1 | cut -d : -f 4 | tr -d "\r\n")"
-    _debug3 "_ec_r" "$_ec_r"
     _ec_s="$(echo "$_signedECText" | _head_n 3 | _tail_n 1 | cut -d : -f 4 | tr -d "\r\n")"
+    if [ "$__ECC_KEY_LEN" -eq "256" ]; then
+      while [ "${#_ec_r}" -lt "64" ]; do
+        _ec_r="0${_ec_r}"
+      done
+      while [ "${#_ec_s}" -lt "64" ]; do
+        _ec_s="0${_ec_s}"
+      done
+    fi
+    if [ "$__ECC_KEY_LEN" -eq "384" ]; then
+      while [ "${#_ec_r}" -lt "96" ]; do
+        _ec_r="0${_ec_r}"
+      done
+      while [ "${#_ec_s}" -lt "96" ]; do
+        _ec_s="0${_ec_s}"
+      done
+    fi
+    if [ "$__ECC_KEY_LEN" -eq "512" ]; then
+      while [ "${#_ec_r}" -lt "132" ]; do
+        _ec_r="0${_ec_r}"
+      done
+      while [ "${#_ec_s}" -lt "132" ]; do
+        _ec_s="0${_ec_s}"
+      done
+    fi
+    _debug3 "_ec_r" "$_ec_r"
     _debug3 "_ec_s" "$_ec_s"
     printf "%s" "$_ec_r$_ec_s" | _h2b | _base64
   else
@@ -1481,6 +1525,19 @@ createCSR() {
 
 _url_replace() {
   tr '/+' '_-' | tr -d '= '
+}
+
+#base64 string
+_durl_replace_base64() {
+  _l=$((${#1} % 4))
+  if [ $_l -eq 2 ]; then
+    _s="$1"'=='
+  elif [ $_l -eq 3 ]; then
+    _s="$1"'='
+  else
+    _s="$1"
+  fi
+  echo "$_s" | tr '_-' '/+'
 }
 
 _time2str() {
@@ -1986,7 +2043,9 @@ _send_signed_request() {
       continue
     fi
     if [ "$ACME_VERSION" = "2" ]; then
-      if [ "$url" = "$ACME_NEW_ACCOUNT" ] || [ "$url" = "$ACME_REVOKE_CERT" ]; then
+      if [ "$url" = "$ACME_NEW_ACCOUNT" ]; then
+        protected="$JWK_HEADERPLACE_PART1$nonce\", \"url\": \"${url}$JWK_HEADERPLACE_PART2, \"jwk\": $jwk"'}'
+      elif [ "$url" = "$ACME_REVOKE_CERT" ] && [ "$keyfile" != "$ACCOUNT_KEY_PATH" ]; then
         protected="$JWK_HEADERPLACE_PART1$nonce\", \"url\": \"${url}$JWK_HEADERPLACE_PART2, \"jwk\": $jwk"'}'
       else
         protected="$JWK_HEADERPLACE_PART1$nonce\", \"url\": \"${url}$JWK_HEADERPLACE_PART2, \"kid\": \"${ACCOUNT_URL}\""'}'
@@ -2537,17 +2596,18 @@ _initpath() {
     CA_HOME="$DEFAULT_CA_HOME"
   fi
 
-  if [ "$ACME_VERSION" = "2" ]; then
-    DEFAULT_CA="$LETSENCRYPT_CA_V2"
-    DEFAULT_STAGING_CA="$LETSENCRYPT_STAGING_CA_V2"
-  fi
-
   if [ -z "$ACME_DIRECTORY" ]; then
-    if [ -z "$STAGE" ]; then
-      ACME_DIRECTORY="$DEFAULT_CA"
-    else
+    if [ "$STAGE" ]; then
       ACME_DIRECTORY="$DEFAULT_STAGING_CA"
       _info "Using stage ACME_DIRECTORY: $ACME_DIRECTORY"
+    else
+      default_acme_server=$(_readaccountconf "DEFAULT_ACME_SERVER")
+      _debug default_acme_server "$default_acme_server"
+      if [ "$default_acme_server" ]; then
+        ACME_DIRECTORY="$default_acme_server"
+      else
+        ACME_DIRECTORY="$DEFAULT_CA"
+      fi
     fi
   fi
 
@@ -2799,10 +2859,10 @@ _setApache() {
 
   apacheVer="$($_APACHECTL -V | grep "Server version:" | cut -d : -f 2 | cut -d " " -f 2 | cut -d '/' -f 2)"
   _debug "apacheVer" "$apacheVer"
-  apacheMajer="$(echo "$apacheVer" | cut -d . -f 1)"
+  apacheMajor="$(echo "$apacheVer" | cut -d . -f 1)"
   apacheMinor="$(echo "$apacheVer" | cut -d . -f 2)"
 
-  if [ "$apacheVer" ] && [ "$apacheMajer$apacheMinor" -ge "24" ]; then
+  if [ "$apacheVer" ] && [ "$apacheMajor$apacheMinor" -ge "24" ]; then
     echo "
 Alias /.well-known/acme-challenge  $ACME_DIR
 
@@ -3380,10 +3440,13 @@ _on_issue_success() {
 
 }
 
+#account_key_length   eab-kid  eab-hmac-key
 registeraccount() {
-  _reg_length="$1"
+  _account_key_length="$1"
+  _eab_id="$2"
+  _eab_hmac_key="$3"
   _initpath
-  _regAccount "$_reg_length"
+  _regAccount "$_account_key_length" "$_eab_id" "$_eab_hmac_key"
 }
 
 __calcAccountKeyHash() {
@@ -3394,10 +3457,27 @@ __calc_account_thumbprint() {
   printf "%s" "$jwk" | tr -d ' ' | _digest "sha256" | _url_replace
 }
 
+_getAccountEmail() {
+  if [ "$ACCOUNT_EMAIL" ]; then
+    echo "$ACCOUNT_EMAIL"
+    return 0
+  fi
+  if [ -z "$CA_EMAIL" ]; then
+    CA_EMAIL="$(_readcaconf CA_EMAIL)"
+  fi
+  if [ "$CA_EMAIL" ]; then
+    echo "$CA_EMAIL"
+    return 0
+  fi
+  _readaccountconf "ACCOUNT_EMAIL"
+}
+
 #keylength
 _regAccount() {
   _initpath
   _reg_length="$1"
+  _eab_id="$2"
+  _eab_hmac_key="$3"
   _debug3 _regAccount "$_regAccount"
   _initAPI
 
@@ -3422,46 +3502,115 @@ _regAccount() {
   if ! _calcjwk "$ACCOUNT_KEY_PATH"; then
     return 1
   fi
-
+  if [ "$_eab_id" ] && [ "$_eab_hmac_key" ]; then
+    _savecaconf CA_EAB_KEY_ID "$_eab_id"
+    _savecaconf CA_EAB_HMAC_KEY "$_eab_hmac_key"
+  fi
+  _eab_id=$(_readcaconf "CA_EAB_KEY_ID")
+  _eab_hmac_key=$(_readcaconf "CA_EAB_HMAC_KEY")
+  _secure_debug3 _eab_id "$_eab_id"
+  _secure_debug3 _eab_hmac_key "$_eab_hmac_key"
+  _email="$(_getAccountEmail)"
+  if [ "$_email" ]; then
+    _savecaconf "CA_EMAIL" "$_email"
+  fi
   if [ "$ACME_VERSION" = "2" ]; then
-    regjson='{"termsOfServiceAgreed": true}'
-    if [ "$ACCOUNT_EMAIL" ]; then
-      regjson='{"contact": ["mailto:'$ACCOUNT_EMAIL'"], "termsOfServiceAgreed": true}'
+    if [ "$ACME_DIRECTORY" = "$CA_ZEROSSL" ]; then
+      if [ -z "$_eab_id" ] || [ -z "$_eab_hmac_key" ]; then
+        _info "No EAB credentials found for ZeroSSL, let's get one"
+        if [ -z "$_email" ]; then
+          _err "Please provide a email address for ZeroSSL account."
+          _err "See ZeroSSL usage: $_ZEROSSL_WIKI"
+          return 1
+        fi
+        _eabresp=$(_post "email=$_email" $_ZERO_EAB_ENDPOINT)
+        if [ "$?" != "0" ]; then
+          _debug2 "$_eabresp"
+          _err "Can not get EAB credentials from ZeroSSL."
+          return 1
+        fi
+        _eab_id="$(echo "$_eabresp" | tr ',}' '\n' | grep '"eab_kid"' | cut -d : -f 2 | tr -d '"')"
+        if [ -z "$_eab_id" ]; then
+          _err "Can not resolve _eab_id"
+          return 1
+        fi
+        _eab_hmac_key="$(echo "$_eabresp" | tr ',}' '\n' | grep '"eab_hmac_key"' | cut -d : -f 2 | tr -d '"')"
+        if [ -z "$_eab_hmac_key" ]; then
+          _err "Can not resolve _eab_hmac_key"
+          return 1
+        fi
+        _savecaconf CA_EAB_KEY_ID "$_eab_id"
+        _savecaconf CA_EAB_HMAC_KEY "$_eab_hmac_key"
+      fi
     fi
+    if [ "$_eab_id" ] && [ "$_eab_hmac_key" ]; then
+      eab_protected="{\"alg\":\"HS256\",\"kid\":\"$_eab_id\",\"url\":\"${ACME_NEW_ACCOUNT}\"}"
+      _debug3 eab_protected "$eab_protected"
+
+      eab_protected64=$(printf "%s" "$eab_protected" | _base64 | _url_replace)
+      _debug3 eab_protected64 "$eab_protected64"
+
+      eab_payload64=$(printf "%s" "$jwk" | _base64 | _url_replace)
+      _debug3 eab_payload64 "$eab_payload64"
+
+      eab_sign_t="$eab_protected64.$eab_payload64"
+      _debug3 eab_sign_t "$eab_sign_t"
+
+      key_hex="$(_durl_replace_base64 "$_eab_hmac_key" | _dbase64 | _hex_dump | tr -d ' ')"
+      _debug3 key_hex "$key_hex"
+
+      eab_signature=$(printf "%s" "$eab_sign_t" | _hmac sha256 $key_hex | _base64 | _url_replace)
+      _debug3 eab_signature "$eab_signature"
+
+      externalBinding=",\"externalAccountBinding\":{\"protected\":\"$eab_protected64\", \"payload\":\"$eab_payload64\", \"signature\":\"$eab_signature\"}"
+      _debug3 externalBinding "$externalBinding"
+    fi
+    if [ "$_email" ]; then
+      email_sg="\"contact\": [\"mailto:$_email\"], "
+    fi
+    regjson="{$email_sg\"termsOfServiceAgreed\": true$externalBinding}"
   else
     _reg_res="$ACME_NEW_ACCOUNT_RES"
     regjson='{"resource": "'$_reg_res'", "terms-of-service-agreed": true, "agreement": "'$ACME_AGREEMENT'"}'
-    if [ "$ACCOUNT_EMAIL" ]; then
-      regjson='{"resource": "'$_reg_res'", "contact": ["mailto:'$ACCOUNT_EMAIL'"], "terms-of-service-agreed": true, "agreement": "'$ACME_AGREEMENT'"}'
+    if [ "$_email" ]; then
+      regjson='{"resource": "'$_reg_res'", "contact": ["mailto:'$_email'"], "terms-of-service-agreed": true, "agreement": "'$ACME_AGREEMENT'"}'
     fi
   fi
 
-  _info "Registering account"
+  _info "Registering account: $ACME_DIRECTORY"
 
   if ! _send_signed_request "${ACME_NEW_ACCOUNT}" "$regjson"; then
     _err "Register account Error: $response"
     return 1
   fi
 
+  _eabAlreadyBound=""
   if [ "$code" = "" ] || [ "$code" = '201' ]; then
     echo "$response" >"$ACCOUNT_JSON_PATH"
     _info "Registered"
   elif [ "$code" = '409' ] || [ "$code" = '200' ]; then
     _info "Already registered"
+  elif [ "$code" = '400' ] && _contains "$response" 'The account is not awaiting external account binding'; then
+    _info "Already register EAB."
+    _eabAlreadyBound=1
   else
     _err "Register account Error: $response"
     return 1
   fi
 
-  _debug2 responseHeaders "$responseHeaders"
-  _accUri="$(echo "$responseHeaders" | grep -i "^Location:" | _head_n 1 | cut -d ':' -f 2- | tr -d "\r\n ")"
-  _debug "_accUri" "$_accUri"
-  if [ -z "$_accUri" ]; then
-    _err "Can not find account id url."
-    _err "$responseHeaders"
-    return 1
+  if [ -z "$_eabAlreadyBound" ]; then
+    _debug2 responseHeaders "$responseHeaders"
+    _accUri="$(echo "$responseHeaders" | grep -i "^Location:" | _head_n 1 | cut -d ':' -f 2- | tr -d "\r\n ")"
+    _debug "_accUri" "$_accUri"
+    if [ -z "$_accUri" ]; then
+      _err "Can not find account id url."
+      _err "$responseHeaders"
+      return 1
+    fi
+    _savecaconf "ACCOUNT_URL" "$_accUri"
+  else
+    ACCOUNT_URL="$(_readcaconf ACCOUNT_URL)"
   fi
-  _savecaconf "ACCOUNT_URL" "$_accUri"
   export ACCOUNT_URL="$_accUri"
 
   CA_KEY_HASH="$(__calcAccountKeyHash)"
@@ -3510,9 +3659,10 @@ updateaccount() {
   fi
   _initAPI
 
+  _email="$(_getAccountEmail)"
   if [ "$ACME_VERSION" = "2" ]; then
     if [ "$ACCOUNT_EMAIL" ]; then
-      updjson='{"contact": ["mailto:'$ACCOUNT_EMAIL'"]}'
+      updjson='{"contact": ["mailto:'$_email'"]}'
     else
       updjson='{"contact": []}'
     fi
@@ -3839,6 +3989,20 @@ _check_dns_entries() {
 
 }
 
+#file
+_get_cert_issuer() {
+  _cfile="$1"
+  echo $(openssl x509 -in $_cfile -text -noout | grep 'Issuer:' | _egrep_o "CN *=[^,]*" | cut -d = -f 2)
+}
+
+#cert  issuer
+_match_issuer() {
+  _cfile="$1"
+  _missuer="$2"
+  _fissuer=$(_get_cert_issuer $_cfile)
+  [ "$_missuer" = "$_fissuer" ]
+}
+
 #webroot, domain domainlist  keylength
 issue() {
   if [ -z "$2" ]; then
@@ -3871,16 +4035,7 @@ issue() {
   _renew_hook="${12}"
   _local_addr="${13}"
   _challenge_alias="${14}"
-  #remove these later.
-  if [ "$_web_roots" = "dns-cf" ]; then
-    _web_roots="dns_cf"
-  fi
-  if [ "$_web_roots" = "dns-dp" ]; then
-    _web_roots="dns_dp"
-  fi
-  if [ "$_web_roots" = "dns-cx" ]; then
-    _web_roots="dns_cx"
-  fi
+  _preferred_chain="${15}"
 
   if [ ! "$IS_RENEW" ]; then
     _initpath "$_main_domain" "$_key_length"
@@ -3933,14 +4088,16 @@ issue() {
   else
     _cleardomainconf "Le_ChallengeAlias"
   fi
-
-  if [ "$ACME_DIRECTORY" != "$DEFAULT_CA" ]; then
-    Le_API="$ACME_DIRECTORY"
-    _savedomainconf "Le_API" "$Le_API"
+  if [ "$_preferred_chain" ]; then
+    _savedomainconf "Le_Preferred_Chain" "$_preferred_chain" "base64"
   else
-    _cleardomainconf Le_API
+    _cleardomainconf "Le_Preferred_Chain"
   fi
 
+  Le_API="$ACME_DIRECTORY"
+  _savedomainconf "Le_API" "$Le_API"
+
+  _info "Using CA: $ACME_DIRECTORY"
   if [ "$_alt_domains" = "$NO_VALUE" ]; then
     _alt_domains=""
   fi
@@ -4096,17 +4253,17 @@ $_authorizations_map"
 
       if [ "$ACME_VERSION" = "2" ]; then
         _idn_d="$(_idn "$d")"
-        _candindates="$(echo "$_authorizations_map" | grep -i "^$_idn_d,")"
-        _debug2 _candindates "$_candindates"
-        if [ "$(echo "$_candindates" | wc -l)" -gt 1 ]; then
-          for _can in $_candindates; do
+        _candidates="$(echo "$_authorizations_map" | grep -i "^$_idn_d,")"
+        _debug2 _candidates "$_candidates"
+        if [ "$(echo "$_candidates" | wc -l)" -gt 1 ]; then
+          for _can in $_candidates; do
             if _startswith "$(echo "$_can" | tr '.' '|')" "$(echo "$_idn_d" | tr '.' '|'),"; then
-              _candindates="$_can"
+              _candidates="$_can"
               break
             fi
           done
         fi
-        response="$(echo "$_candindates" | sed "s/$_idn_d,//")"
+        response="$(echo "$_candidates" | sed "s/$_idn_d,//")"
         _debug2 "response" "$response"
         if [ -z "$response" ]; then
           _err "get to authz error."
@@ -4297,7 +4454,7 @@ $_authorizations_map"
 
   if [ "$dns_entries" ]; then
     if [ -z "$Le_DNSSleep" ]; then
-      _info "Let's check each dns records now. Sleep 20 seconds first."
+      _info "Let's check each DNS record now. Sleep 20 seconds first."
       _sleep 20
       if ! _check_dns_entries; then
         _err "check dns error."
@@ -4566,7 +4723,14 @@ $_authorizations_map"
         break
       elif _contains "$response" "\"processing\""; then
         _info "Order status is processing, lets sleep and retry."
-        _sleep 2
+        _retryafter=$(echo "$responseHeaders" | grep -i "^Retry-After *:" | cut -d : -f 2 | tr -d ' ' | tr -d '\r')
+        _debug "_retryafter" "$_retryafter"
+        if [ "$_retryafter" ]; then
+          _info "Retry after: $_retryafter"
+          _sleep $_retryafter
+        else
+          _sleep 2
+        fi
       else
         _err "Sign error, wrong status"
         _err "$response"
@@ -4596,7 +4760,7 @@ $_authorizations_map"
       _on_issue_err "$_post_hook"
       return 1
     fi
-    _info "Download cert, Le_LinkCert: $Le_LinkCert"
+    _info "Downloading cert, Le_LinkCert: $Le_LinkCert"
     if ! _send_signed_request "$Le_LinkCert"; then
       _err "Sign failed, can not download cert:$Le_LinkCert."
       _err "$response"
@@ -4605,17 +4769,36 @@ $_authorizations_map"
     fi
 
     echo "$response" >"$CERT_PATH"
+    _split_cert_chain "$CERT_PATH" "$CERT_FULLCHAIN_PATH" "$CA_CERT_PATH"
 
-    if [ "$(grep -- "$BEGIN_CERT" "$CERT_PATH" | wc -l)" -gt "1" ]; then
-      _debug "Found cert chain"
-      cat "$CERT_PATH" >"$CERT_FULLCHAIN_PATH"
-      _end_n="$(grep -n -- "$END_CERT" "$CERT_FULLCHAIN_PATH" | _head_n 1 | cut -d : -f 1)"
-      _debug _end_n "$_end_n"
-      sed -n "1,${_end_n}p" "$CERT_FULLCHAIN_PATH" >"$CERT_PATH"
-      _end_n="$(_math $_end_n + 1)"
-      sed -n "${_end_n},9999p" "$CERT_FULLCHAIN_PATH" >"$CA_CERT_PATH"
+    if [ "$_preferred_chain" ]; then
+      _cert_issuer=$(_get_cert_issuer "$CA_CERT_PATH")
+      _debug _cert_issuer "$_cert_issuer"
+      if ! _match_issuer "$CA_CERT_PATH" "$_preferred_chain"; then
+        rels="$(echo "$responseHeaders" | tr -d ' <>' | grep -i "^link:" | grep -i 'rel="alternate"' | cut -d : -f 2- | cut -d ';' -f 1)"
+        _debug2 "rels" "$rels"
+        for rel in $rels; do
+          _info "Try rel: $rel"
+          if ! _send_signed_request "$rel"; then
+            _err "Sign failed, can not download cert:$rel"
+            _err "$response"
+            continue
+          fi
+          _relcert="$CERT_PATH.alt"
+          _relfullchain="$CERT_FULLCHAIN_PATH.alt"
+          _relca="$CA_CERT_PATH.alt"
+          echo "$response" >"$_relcert"
+          _split_cert_chain "$_relcert" "$_relfullchain" "$_relca"
+          if _match_issuer "$_relca" "$_preferred_chain"; then
+            _info "Matched issuer in: $rel"
+            cat $_relcert >"$CERT_PATH"
+            cat $_relfullchain >"$CERT_FULLCHAIN_PATH"
+            cat $_relca >"$CA_CERT_PATH"
+            break
+          fi
+        done
+      fi
     fi
-
   else
     if ! _send_signed_request "${ACME_NEW_ORDER}" "{\"resource\": \"$ACME_NEW_ORDER_RES\", \"csr\": \"$der\"}" "needbase64"; then
       _err "Sign failed. $response"
@@ -4784,6 +4967,22 @@ $_authorizations_map"
   fi
 }
 
+#in_out_cert   out_fullchain out out_ca
+_split_cert_chain() {
+  _certf="$1"
+  _fullchainf="$2"
+  _caf="$3"
+  if [ "$(grep -- "$BEGIN_CERT" "$_certf" | wc -l)" -gt "1" ]; then
+    _debug "Found cert chain"
+    cat "$_certf" >"$_fullchainf"
+    _end_n="$(grep -n -- "$END_CERT" "$_fullchainf" | _head_n 1 | cut -d : -f 1)"
+    _debug _end_n "$_end_n"
+    sed -n "1,${_end_n}p" "$_fullchainf" >"$_certf"
+    _end_n="$(_math $_end_n + 1)"
+    sed -n "${_end_n},9999p" "$_fullchainf" >"$_caf"
+  fi
+}
+
 #domain  [isEcc]
 renew() {
   Le_Domain="$1"
@@ -4819,14 +5018,6 @@ renew() {
   fi
 
   if [ "$Le_API" ]; then
-    if [ "$_OLD_CA_HOST" = "$Le_API" ]; then
-      export Le_API="$DEFAULT_CA"
-      _savedomainconf Le_API "$Le_API"
-    fi
-    if [ "$_OLD_STAGE_CA_HOST" = "$Le_API" ]; then
-      export Le_API="$DEFAULT_STAGING_CA"
-      _savedomainconf Le_API "$Le_API"
-    fi
     export ACME_DIRECTORY="$Le_API"
     #reload ca configs
     ACCOUNT_KEY_PATH=""
@@ -4852,7 +5043,7 @@ renew() {
   Le_PreHook="$(_readdomainconf Le_PreHook)"
   Le_PostHook="$(_readdomainconf Le_PostHook)"
   Le_RenewHook="$(_readdomainconf Le_RenewHook)"
-  issue "$Le_Webroot" "$Le_Domain" "$Le_Alt" "$Le_Keylength" "$Le_RealCertPath" "$Le_RealKeyPath" "$Le_RealCACertPath" "$Le_ReloadCmd" "$Le_RealFullChainPath" "$Le_PreHook" "$Le_PostHook" "$Le_RenewHook" "$Le_LocalAddress" "$Le_ChallengeAlias"
+  issue "$Le_Webroot" "$Le_Domain" "$Le_Alt" "$Le_Keylength" "$Le_RealCertPath" "$Le_RealKeyPath" "$Le_RealCACertPath" "$Le_ReloadCmd" "$Le_RealFullChainPath" "$Le_PreHook" "$Le_PostHook" "$Le_RenewHook" "$Le_LocalAddress" "$Le_ChallengeAlias" "$Le_Preferred_Chain"
   res="$?"
   if [ "$res" != "0" ]; then
     return "$res"
@@ -5086,13 +5277,17 @@ showcsr() {
   _info "KeyLength=$_csrkeylength"
 }
 
+#listraw  domain
 list() {
   _raw="$1"
+  _domain="$2"
   _initpath
 
   _sep="|"
   if [ "$_raw" ]; then
-    printf "%s\n" "Main_Domain${_sep}KeyLength${_sep}SAN_Domains${_sep}Created${_sep}Renew"
+    if [ -z "$_domain" ]; then
+      printf "%s\n" "Main_Domain${_sep}KeyLength${_sep}SAN_Domains${_sep}CA${_sep}Created${_sep}Renew"
+    fi
     for di in "${CERT_HOME}"/*.*/; do
       d=$(basename "$di")
       _debug d "$d"
@@ -5104,15 +5299,22 @@ list() {
         DOMAIN_CONF="$di/$d.conf"
         if [ -f "$DOMAIN_CONF" ]; then
           . "$DOMAIN_CONF"
-          printf "%s\n" "$Le_Domain${_sep}\"$Le_Keylength\"${_sep}$Le_Alt${_sep}$Le_CertCreateTimeStr${_sep}$Le_NextRenewTimeStr"
+          _ca="$(_getCAShortName "$Le_API")"
+          if [ -z "$_domain" ]; then
+            printf "%s\n" "$Le_Domain${_sep}\"$Le_Keylength\"${_sep}$Le_Alt${_sep}$_ca${_sep}$Le_CertCreateTimeStr${_sep}$Le_NextRenewTimeStr"
+          else
+            if [ "$_domain" = "$d" ]; then
+              cat "$DOMAIN_CONF"
+            fi
+          fi
         fi
       )
     done
   else
     if _exists column; then
-      list "raw" | column -t -s "$_sep"
+      list "raw" "$_domain" | column -t -s "$_sep"
     else
-      list "raw" | tr "$_sep" '\t'
+      list "raw" "$_domain" | tr "$_sep" '\t'
     fi
   fi
 
@@ -5510,7 +5712,7 @@ revoke() {
       fi
     fi
   else
-    _info "Domain key file doesn't exists."
+    _info "Domain key file doesn't exist."
   fi
 
   _info "Try account key."
@@ -5609,7 +5811,7 @@ _deactivate() {
     _URL_NAME="uri"
   fi
 
-  entries="$(echo "$response" | _egrep_o "{ *\"type\":\"[^\"]*\", *\"status\": *\"valid\", *\"$_URL_NAME\"[^}]*")"
+  entries="$(echo "$response" | _egrep_o "[^{]*\"type\":\"[^\"]*\", *\"status\": *\"valid\", *\"$_URL_NAME\"[^}]*")"
   if [ -z "$entries" ]; then
     _info "No valid entries found."
     if [ -z "$thumbprint" ]; then
@@ -6221,23 +6423,39 @@ Commands:
   --createCSR, -ccsr       Create CSR , professional use.
   --deactivate             Deactivate the domain authz, professional use.
   --set-notify             Set the cron notification hook, level or mode.
+  --set-default-ca         Used with '--server' , to set the default CA to use to use. 
 
 
 Parameters:
   --domain, -d   domain.tld         Specifies a domain, used to issue, renew or revoke etc.
-  --challenge-alias domain.tld      The challenge domain alias for DNS alias mode: $_DNS_ALIAS_WIKI
-  --domain-alias domain.tld         The domain alias for DNS alias mode: $_DNS_ALIAS_WIKI
+  --challenge-alias domain.tld      The challenge domain alias for DNS alias mode.
+                                    See: $_DNS_ALIAS_WIKI
+
+  --domain-alias domain.tld         The domain alias for DNS alias mode.
+                                    See: $_DNS_ALIAS_WIKI
+
+  --preferred-chain  CHAIN          If the CA offers multiple certificate chains, prefer the chain with an issuer matching this Subject Common Name.
+                                    If no match, the default offered chain will be used. (default: empty)
+                                    See: $_PREFERRED_CHAIN_WIKI
+
   --force, -f                       Used to force to install or force to renew a cert immediately.
   --staging, --test                 Use staging server, just for test.
   --debug                           Output debug info.
-  --output-insecure                 Output all the sensitive messages. By default all the credentials/sensitive messages are hidden from the output/debug/log for security.
+  --output-insecure                 Output all the sensitive messages.
+                                    By default all the credentials/sensitive messages are hidden from the output/debug/log for security.
+
   --webroot, -w  /path/to/webroot   Specifies the web root folder for web root mode.
   --standalone                      Use standalone mode.
   --alpn                            Use standalone alpn mode.
-  --stateless                       Use stateless mode, see: $_STATELESS_WIKI
+  --stateless                       Use stateless mode.
+                                    See: $_STATELESS_WIKI
+
   --apache                          Use apache mode.
-  --dns [dns_cf|dns_dp|dns_cx|/path/to/api/file]   Use dns mode or dns api.
-  --dnssleep   300                  The time in seconds to wait for all the txt records to take effect in dns api mode. It's not necessary to use this by default, $PROJECT_NAME polls dns status automatically.
+  --dns [dns_hook]                  Use dns mode or dns api.
+                                    See: $_DNS_API_WIKI
+
+  --dnssleep   300                  The time in seconds to wait for all the txt records to propagate in dns api mode.
+                                    It's not necessary to use this by default, $PROJECT_NAME polls dns status by DOH automatically.
 
   --keylength, -k [2048]            Specifies the domain key length: 2048, 3072, 4096, 8192 or ec-256, ec-384, ec-521.
   --accountkeylength, -ak [2048]    Specifies the account key length: 2048, 3072, 4096
@@ -6245,6 +6463,10 @@ Parameters:
   --log-level 1|2                   Specifies the log level, default is 1.
   --syslog [0|3|6|7]                Syslog level, 0: disable syslog, 3: error, 6: info, 7: debug.
 
+  --eab-kid EAB_KID                 Key Identifier for External Account Binding.
+  --eab-hmac-key EAB_HMAC_KEY       HMAC key for External Account Binding.
+            
+            
   These parameters are to install the cert to nginx/apache or any other server after issue/renew a cert:
 
   --cert-file                       After issue/renew, the cert will be copied to this path.
@@ -6255,12 +6477,14 @@ Parameters:
   --reloadcmd \"service nginx reload\" After issue/renew, it's used to reload the server.
 
   --server SERVER                   ACME Directory Resource URI. (default: $DEFAULT_CA)
+                                    See: $_SERVER_WIKI
+
   --accountconf                     Specifies a customized account config file.
   --home                            Specifies the home dir for $PROJECT_NAME.
   --cert-home                       Specifies the home dir to save all the certs, only valid for '--install' command.
   --config-home                     Specifies the home dir to save all the configurations.
   --useragent                       Specifies the user agent string. it will be saved for future use too.
-  --accountemail                    Specifies the account email, only valid for the '--install' and '--update-account' command.
+  --accountemail, -m                Specifies the account email, only valid for the '--install' and '--update-account' command.
   --accountkey                      Specifies the account key path, only valid for the '--install' command.
   --days                            Specifies the days to renew the cert when using '--issue' command. The default value is $DEFAULT_RENEW days.
   --httpport                        Specifies the standalone listening port. Only valid if the server is behind a reverse proxy or load balancer.
@@ -6271,7 +6495,9 @@ Parameters:
   --insecure                        Do not check the server certificate, in some devices, the api server's certificate may not be trusted.
   --ca-bundle                       Specifies the path to the CA certificate bundle to verify api server's certificate.
   --ca-path                         Specifies directory containing CA certificates in PEM format, used by wget or curl.
-  --nocron                          Only valid for '--install' command, which means: do not install the default cron job. In this case, the certs will not be renewed automatically.
+  --nocron                          Only valid for '--install' command, which means: do not install the default cron job.
+                                    In this case, the certs will not be renewed automatically.
+  
   --noprofile                       Only valid for '--install' command, which means: do not install aliases to user profile.
   --no-color                        Do not output color text.
   --force-color                     Force output of color text. Useful for non-interactive use with the aha tool for HTML E-Mails.
@@ -6288,7 +6514,9 @@ Parameters:
   --listen-v6                       Force standalone/tls server to listen at ipv6.
   --openssl-bin                     Specifies a custom openssl bin location.
   --use-wget                        Force to use wget, if you have both curl and wget installed.
-  --yes-I-know-dns-manual-mode-enough-go-ahead-please  Force to use dns manual mode: $_DNS_MANUAL_WIKI
+  --yes-I-know-dns-manual-mode-enough-go-ahead-please  Force to use dns manual mode.
+                                    See:  $_DNS_MANUAL_WIKI
+
   --branch, -b                      Only valid for '--upgrade' command, specifies the branch name to upgrade to.
 
   --notify-level  0|1|2|3           Set the notification level:  Default value is $NOTIFY_LEVEL_DEFAULT.
@@ -6296,11 +6524,15 @@ Parameters:
                                      1: send notifications only when there is an error.
                                      2: send notifications when a cert is successfully renewed, or there is an error.
                                      3: send notifications when a cert is skipped, renewed, or error.
+
   --notify-mode   0|1               Set notification mode. Default value is $NOTIFY_MODE_DEFAULT.
                                      0: Bulk mode. Send all the domain's notifications in one message(mail).
                                      1: Cert mode. Send a message for every single cert.
+
   --notify-hook   [hookname]        Set the notify hook
-  --revoke-reason [0-10]            The reason for '--revoke' command. See: $_REVOKE_WIKI
+  --revoke-reason [0-10]            The reason for '--revoke' command.
+                                    See: $_REVOKE_WIKI
+
 
 "
 }
@@ -6383,12 +6615,6 @@ _processAccountConf() {
     _saveaccountconf "USER_AGENT" "$USER_AGENT"
   fi
 
-  if [ "$_accountemail" ]; then
-    _saveaccountconf "ACCOUNT_EMAIL" "$_accountemail"
-  elif [ "$ACCOUNT_EMAIL" ] && [ "$ACCOUNT_EMAIL" != "$DEFAULT_ACCOUNT_EMAIL" ]; then
-    _saveaccountconf "ACCOUNT_EMAIL" "$ACCOUNT_EMAIL"
-  fi
-
   if [ "$_openssl_bin" ]; then
     _saveaccountconf "ACME_OPENSSL_BIN" "$_openssl_bin"
   elif [ "$ACME_OPENSSL_BIN" ] && [ "$ACME_OPENSSL_BIN" != "$DEFAULT_OPENSSL_BIN" ]; then
@@ -6415,15 +6641,73 @@ _checkSudo() {
       #it's root using sudo, no matter it's using sudo or not, just fine
       return 0
     fi
-    if [ "$SUDO_COMMAND" = "/bin/su" ] || [ "$SUDO_COMMAND" = "/bin/bash" ]; then
+    if [ -n "$SUDO_COMMAND" ]; then
       #it's a normal user doing "sudo su", or `sudo -i` or `sudo -s`
-      #fine
-      return 0
+      _endswith "$SUDO_COMMAND" /bin/su || grep "^$SUDO_COMMAND\$" /etc/shells >/dev/null 2>&1
+      return $?
     fi
     #otherwise
     return 1
   fi
   return 0
+}
+
+#server
+_selectServer() {
+  _server="$1"
+  _server_lower="$(echo "$_server" | _lower_case)"
+  _sindex=0
+  for snames in $CA_NAMES; do
+    snames="$(echo "$snames" | _lower_case)"
+    _sindex="$(_math $_sindex + 1)"
+    _debug2 "_selectServer try snames" "$snames"
+    for sname in $(echo "$snames" | tr ',' ' '); do
+      if [ "$_server_lower" = "$sname" ]; then
+        _debug2 "_selectServer match $sname"
+        _serverdir="$(_getfield "$CA_SERVERS" $_sindex)"
+        _debug "Selected server: $_serverdir"
+        ACME_DIRECTORY="$_serverdir"
+        export ACME_DIRECTORY
+        return
+      fi
+    done
+  done
+  ACME_DIRECTORY="$_server"
+  export ACME_DIRECTORY
+}
+
+#url
+_getCAShortName() {
+  caurl="$1"
+  if [ -z "$caurl" ]; then
+    caurl="$DEFAULT_CA"
+  fi
+  caurl_lower="$(echo $caurl | _lower_case)"
+  _sindex=0
+  for surl in $(echo "$CA_SERVERS" | _lower_case | tr , ' '); do
+    _sindex="$(_math $_sindex + 1)"
+    if [ "$caurl_lower" = "$surl" ]; then
+      _nindex=0
+      for snames in $CA_NAMES; do
+        _nindex="$(_math $_nindex + 1)"
+        if [ $_nindex -ge $_sindex ]; then
+          _getfield "$snames" 1
+          return
+        fi
+      done
+    fi
+  done
+  echo "$caurl"
+}
+
+#set default ca to $ACME_DIRECTORY
+setdefaultca() {
+  if [ -z "$ACME_DIRECTORY" ]; then
+    _err "Please give a --server parameter."
+    return 1
+  fi
+  _saveaccountconf "DEFAULT_ACME_SERVER" "$ACME_DIRECTORY"
+  _info "Changed default CA to: $(__green "$ACME_DIRECTORY")"
 }
 
 _process() {
@@ -6477,6 +6761,9 @@ _process() {
   _notify_level=""
   _notify_mode=""
   _revoke_reason=""
+  _eab_kid=""
+  _eab_hmac_key=""
+  _preferred_chain=""
   while [ ${#} -gt 0 ]; do
     case "${1}" in
 
@@ -6566,6 +6853,9 @@ _process() {
       --set-notify)
         _CMD="setnotify"
         ;;
+      --set-default-ca)
+        _CMD="setdefaultca"
+        ;;
       --domain | -d)
         _dvalue="$2"
 
@@ -6604,9 +6894,8 @@ _process() {
         STAGE="1"
         ;;
       --server)
-        ACME_DIRECTORY="$2"
-        _server="$ACME_DIRECTORY"
-        export ACME_DIRECTORY
+        _server="$2"
+        _selectServer "$_server"
         shift
         ;;
       --debug)
@@ -6763,7 +7052,7 @@ _process() {
         USER_AGENT="$_useragent"
         shift
         ;;
-      --accountemail)
+      --accountemail | -m)
         _accountemail="$2"
         ACCOUNT_EMAIL="$_accountemail"
         shift
@@ -6957,6 +7246,18 @@ _process() {
         fi
         shift
         ;;
+      --eab-kid)
+        _eab_kid="$2"
+        shift
+        ;;
+      --eab-hmac-key)
+        _eab_hmac_key="$2"
+        shift
+        ;;
+      --preferred-chain)
+        _preferred_chain="$2"
+        shift
+        ;;
       *)
         _err "Unknown parameter : $1"
         return 1
@@ -7023,7 +7324,7 @@ _process() {
     uninstall) uninstall "$_nocron" ;;
     upgrade) upgrade ;;
     issue)
-      issue "$_webroot" "$_domain" "$_altdomains" "$_keylength" "$_cert_file" "$_key_file" "$_ca_file" "$_reloadcmd" "$_fullchain_file" "$_pre_hook" "$_post_hook" "$_renew_hook" "$_local_address" "$_challenge_alias"
+      issue "$_webroot" "$_domain" "$_altdomains" "$_keylength" "$_cert_file" "$_key_file" "$_ca_file" "$_reloadcmd" "$_fullchain_file" "$_pre_hook" "$_post_hook" "$_renew_hook" "$_local_address" "$_challenge_alias" "$_preferred_chain"
       ;;
     deploy)
       deploy "$_domain" "$_deploy_hook" "$_ecc"
@@ -7053,7 +7354,7 @@ _process() {
       deactivate "$_domain,$_altdomains"
       ;;
     registeraccount)
-      registeraccount "$_accountkeylength"
+      registeraccount "$_accountkeylength" "$_eab_kid" "$_eab_hmac_key"
       ;;
     updateaccount)
       updateaccount
@@ -7062,7 +7363,7 @@ _process() {
       deactivateaccount
       ;;
     list)
-      list "$_listraw"
+      list "$_listraw" "$_domain"
       ;;
     installcronjob) installcronjob "$_confighome" ;;
     uninstallcronjob) uninstallcronjob ;;
@@ -7084,6 +7385,9 @@ _process() {
       ;;
     setnotify)
       setnotify "$_notify_hook" "$_notify_level" "$_notify_mode"
+      ;;
+    setdefaultca)
+      setdefaultca
       ;;
     *)
       if [ "$_CMD" ]; then
